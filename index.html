@@ -136,7 +136,7 @@ table.t tr:hover td{background:#f7fafd}
     <div class="card">
       <div class="ct">⚠️ ตัวชี้วัด Critical &amp; เฝ้าระวัง (ปี 2569)</div>
       <div class="tw"><table class="t">
-        <thead><tr><th>หมวด</th><th>ตัวชี้วัด</th><th>ทิศ</th><th>เป้าหมาย</th><th>ผล 2569</th><th>% บรรลุ</th><th>สถานะ</th></tr></thead>
+        <thead><tr><th>หมวด</th><th>ตัวชี้วัด</th><th>ทิศ</th><th>เป้าหมาย</th><th>ผล 2569</th><th>% บรรลุ</th><th>สถานะ</th><th>ผู้รับผิดชอบ</th></tr></thead>
         <tbody id="alertBody"></tbody>
       </table></div>
     </div>
@@ -167,7 +167,7 @@ table.t tr:hover td{background:#f7fafd}
       <table class="t">
         <thead><tr><th>#</th><th>หมวดหมู่</th><th>ตัวชี้วัด</th><th>ทิศ</th><th>เป้าหมาย</th>
           <th>2564</th><th>2565</th><th>2566</th><th>2567</th><th>2568</th><th>2569</th>
-          <th>% บรรลุ</th><th>สถานะ</th></tr></thead>
+          <th>% บรรลุ</th><th>สถานะ</th><th>ผู้รับผิดชอบ</th></tr></thead>
         <tbody id="allBody"></tbody>
       </table>
     </div>
@@ -269,6 +269,35 @@ function parseSheetRows(rows) {
   const groups = [];
   let curGroup = null;
 
+  // ตรวจหา header row ก่อน เพื่อหาว่าคอลัมน์ปีอยู่ที่ index ไหน
+  // โครงสร้าง: A=ตัวชี้วัด, B=เป้าหมาย, C=2564, D=2565, E=2566, F=2567, G=2568(เก่า), H=2568(ใหม่), I=2569
+  // แต่บาง sheet อาจมีแค่ 8 คอลัมน์ โดย H คือ 2569
+  // ตรวจจาก header row ที่มีคำว่า "2569"
+
+  let colMap = {target:1, y2564:2, y2565:3, y2566:4, y2567:5, y2568:6, y2569:7}; // default
+  
+  for (const row of rows) {
+    const cells = row.c || [];
+    const vals = cells.map(c => c ? String(c.v||'').trim() : '');
+    // หา header row
+    if (vals.some(v => v.includes('2564')) && vals.some(v => v.includes('2569'))) {
+      // map ตำแหน่ง
+      vals.forEach((v, i) => {
+        if (v.includes('เป้าหมาย') || v.includes('เป้า')) colMap.target = i;
+        else if (v.includes('2564')) colMap.y2564 = i;
+        else if (v.includes('2565')) colMap.y2565 = i;
+        else if (v.includes('2566')) colMap.y2566 = i;
+        else if (v.includes('2567')) colMap.y2567 = i;
+        else if (v.includes('2568') && v.includes('ใหม่')) colMap.y2568 = i;
+        else if (v.includes('2568') && !v.includes('ใหม่') && !v.includes('เก่า')) colMap.y2568 = i;
+        else if (v.includes('2569')) colMap.y2569 = i;
+        if (v.includes('ผู้รับผิดชอบ') || v.includes('รับผิดชอบ')) colMap.owner = i;
+      });
+      console.log('Column map detected:', colMap);
+      break;
+    }
+  }
+
   rows.forEach(row => {
     const cells = row.c || [];
     const getCell = i => {
@@ -298,14 +327,26 @@ function parseSheetRows(rows) {
     if (matched || !curGroup) return;
     if (SKIP_KW.some(kw => val.includes(kw))) return;
 
-    const targetRaw = getCell(1);
+    const targetRaw = getCell(colMap.target);
     if (targetRaw === null) return;
     const [dir, tv] = parseTarget(targetRaw);
     if (tv === null) return;
 
-    const data = [2,3,4,5,6,7].map(i => parseNum(getCell(i)));
+    // ดึงข้อมูลตามตำแหน่งจริง: [2564, 2565, 2566, 2567, 2568, 2569]
+    const data = [
+      parseNum(getCell(colMap.y2564)),
+      parseNum(getCell(colMap.y2565)),
+      parseNum(getCell(colMap.y2566)),
+      parseNum(getCell(colMap.y2567)),
+      parseNum(getCell(colMap.y2568)),
+      parseNum(getCell(colMap.y2569)),
+    ];
 
-    curGroup.kpis.push({name: val.slice(0, 120), dir, target: tv, unit: '', data});
+    // คอลัมน์ I (index 8) = ผู้รับผิดชอบ
+    const owner = getCell(colMap.owner || 8);
+    const ownerStr = owner ? String(owner).trim() : '';
+
+    curGroup.kpis.push({name: val.slice(0, 120), dir, target: tv, unit: '', data, owner: ownerStr});
   });
 
   return groups;
@@ -323,25 +364,74 @@ function setStatus(msg, type) {
 // ── Main fetch ────────────────────────────────────────────────────────
 async function fetchSheetData() {
   setStatus('⏳ กำลังโหลดข้อมูลจาก Google Sheets...', 'loading');
-  try {
-    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}&_=${Date.now()}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const text = await res.text();
-    // Strip JSONP wrapper: google.visualization.Query.setResponse({...});
-    const jsonStr = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-    const json = JSON.parse(jsonStr);
-    const rows = json.table.rows;
-    GROUPS = parseSheetRows(rows);
-    const total = GROUPS.reduce((s,g)=>s+g.kpis.length,0);
-    const now = new Date().toLocaleTimeString('th-TH');
-    setStatus(`✅ อัปเดตล่าสุด ${now} · ${total} ตัวชี้วัด`, 'ok');
-    return true;
-  } catch(e) {
-    setStatus('⚠️ ไม่สามารถเชื่อมต่อ Google Sheets ได้ · ' + e.message, 'error');
-    console.error('Sheets fetch error:', e);
-    return false;
+
+  // ลอง 3 วิธีตามลำดับ
+  const methods = [
+    // วิธี 1: gviz JSON (เร็วที่สุด)
+    async () => {
+      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}&_=${Date.now()}`;
+      const res = await fetch(url, {cache:'no-store'});
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      const jsonStr = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+      const json = JSON.parse(jsonStr);
+      return parseSheetRows(json.table.rows);
+    },
+    // วิธี 2: CSV export
+    async () => {
+      const gid = 0;
+      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&sheet=${encodeURIComponent(SHEET_NAME)}&gid=${gid}&_=${Date.now()}`;
+      const res = await fetch(url, {cache:'no-store'});
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      return parseCSVRows(text);
+    },
+    // วิธี 3: Published CSV
+    async () => {
+      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/pub?output=csv&sheet=${encodeURIComponent(SHEET_NAME)}&_=${Date.now()}`;
+      const res = await fetch(url, {cache:'no-store'});
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      return parseCSVRows(text);
+    }
+  ];
+
+  for (let i = 0; i < methods.length; i++) {
+    try {
+      const groups = await methods[i]();
+      if (groups && groups.length > 0) {
+        GROUPS = groups;
+        const total = GROUPS.reduce((s,g)=>s+g.kpis.length, 0);
+        const now = new Date().toLocaleTimeString('th-TH');
+        setStatus(`✅ อัปเดตล่าสุด ${now} · ${total} ตัวชี้วัด`, 'ok');
+        return true;
+      }
+    } catch(e) {
+      console.warn(`Method ${i+1} failed:`, e.message);
+    }
   }
+
+  setStatus('⚠️ ไม่สามารถเชื่อมต่อ Google Sheets ได้ — ตรวจสอบการตั้งค่า Share', 'error');
+  return false;
+}
+
+// ── Parse CSV ─────────────────────────────────────────────────────────
+function parseCSVRows(csvText) {
+  const lines = csvText.split('\n').filter(l => l.trim());
+  const rows = lines.map(line => {
+    // simple CSV parse (handle quoted fields)
+    const cells = [];
+    let cur = '', inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === ',' && !inQ) { cells.push(cur.trim()); cur = ''; }
+      else { cur += ch; }
+    }
+    cells.push(cur.trim());
+    return { c: cells.map(v => ({ v: v || null })) };
+  });
+  return parseSheetRows(rows);
 }
 
 // ── Auto-refresh loop ─────────────────────────────────────────────────
@@ -441,6 +531,7 @@ function renderOverview(){
     <td style="font-weight:600;color:${SC[st]}">${fv(v)}</td>
     <td>${pctBar(pct,st)}</td>
     <td><span class="chip ${SCL[st]}">${SL[st]}</span></td>
+    <td style="font-size:11px;color:var(--muted)">${k.owner||'—'}</td>
   </tr>`).join('');
 }
 
@@ -474,6 +565,7 @@ function renderAll(){
       <td style="font-weight:700;color:${SC[st]}">${fv(v)}</td>
       <td>${pctBar(pct,st)}</td>
       <td><span class="chip ${SCL[st]}">${SL[st]}</span></td>
+      <td style="font-size:11px;color:var(--muted);white-space:nowrap">${k.owner||'—'}</td>
     </tr>`;
   }).join('');
 }
