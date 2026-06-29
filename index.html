@@ -364,55 +364,21 @@ function setStatus(msg, type) {
 // ── Main fetch ────────────────────────────────────────────────────────
 async function fetchSheetData() {
   setStatus('⏳ กำลังโหลดข้อมูลจาก Google Sheets...', 'loading');
-
-  // ลอง 3 วิธีตามลำดับ
-  const methods = [
-    // วิธี 1: gviz JSON (เร็วที่สุด)
-    async () => {
-      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}&_=${Date.now()}`;
-      const res = await fetch(url, {cache:'no-store'});
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      const jsonStr = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-      const json = JSON.parse(jsonStr);
-      return parseSheetRows(json.table.rows);
-    },
-    // วิธี 2: CSV export
-    async () => {
-      const gid = 0;
-      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&sheet=${encodeURIComponent(SHEET_NAME)}&gid=${gid}&_=${Date.now()}`;
-      const res = await fetch(url, {cache:'no-store'});
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      return parseCSVRows(text);
-    },
-    // วิธี 3: Published CSV
-    async () => {
-      const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/pub?output=csv&sheet=${encodeURIComponent(SHEET_NAME)}&_=${Date.now()}`;
-      const res = await fetch(url, {cache:'no-store'});
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
-      return parseCSVRows(text);
-    }
-  ];
-
-  for (let i = 0; i < methods.length; i++) {
-    try {
-      const groups = await methods[i]();
-      if (groups && groups.length > 0) {
-        GROUPS = groups;
-        const total = GROUPS.reduce((s,g)=>s+g.kpis.length, 0);
-        const now = new Date().toLocaleTimeString('th-TH');
-        setStatus(`✅ อัปเดตล่าสุด ${now} · ${total} ตัวชี้วัด`, 'ok');
-        return true;
-      }
-    } catch(e) {
-      console.warn(`Method ${i+1} failed:`, e.message);
-    }
+  try {
+    const url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSFQpzpBB8itcyiwGnnEU-qHnCjSjQGNmJ8e00W42JOQye-IzP5HYOTgnIo4kgsbh27cIUDjs4CDzQK/pub?output=csv&_=' + Date.now();
+    const res = await fetch(url, {cache: 'no-store'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    GROUPS = parseCSVRows(text);
+    const total = GROUPS.reduce((s,g) => s + g.kpis.length, 0);
+    const now = new Date().toLocaleTimeString('th-TH');
+    setStatus('✅ อัปเดตล่าสุด ' + now + ' · ' + total + ' ตัวชี้วัด', 'ok');
+    return true;
+  } catch(e) {
+    setStatus('⚠️ ไม่สามารถเชื่อมต่อ Google Sheets ได้ · ' + e.message, 'error');
+    console.error('Sheets fetch error:', e);
+    return false;
   }
-
-  setStatus('⚠️ ไม่สามารถเชื่อมต่อ Google Sheets ได้ — ตรวจสอบการตั้งค่า Share', 'error');
-  return false;
 }
 
 // ── Parse CSV ─────────────────────────────────────────────────────────
