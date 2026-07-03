@@ -102,7 +102,7 @@ table.t tr:hover td{background:#f7fafd}
   </div>
   <div class="tb-right">
     <span>ปี 2569 (ต.ค.68–พ.ค.69)</span>
-    <span class="live">● 180 KPIs</span>
+    <span class="live" id="totalBadge">● กำลังโหลด...</span>
   </div>
 </div>
 <div style="background:#f0f4f8;padding:5px 22px;font-size:11.5px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #d8e3ee">
@@ -119,7 +119,8 @@ table.t tr:hover td{background:#f7fafd}
   <div id="overview" class="sec active">
     <div class="krow" id="ovCards"></div>
     <div class="g2">
-      <div class="card"><div class="ct">📊 สัดส่วนสถานะตัวชี้วัด ปี 2569</div>
+      <div id="overallSummaryBar" style="margin-bottom:14px"></div>
+    <div class="card"><div class="ct">📊 สัดส่วนสถานะตัวชี้วัด ปี 2569</div>
         <div style="position:relative;height:210px"><canvas id="pieAll"></canvas></div>
         <div class="lg" style="margin-top:10px;justify-content:center">
           <span><span class="dot" style="background:#1a7a3c"></span>ผ่าน</span>
@@ -163,7 +164,8 @@ table.t tr:hover td{background:#f7fafd}
       <input type="text" id="srch" placeholder="🔍 ค้นหา..." oninput="renderAll()" style="min-width:180px">
       <span class="cb" id="allCount"></span>
     </div>
-    <div class="card" style="padding:0;overflow:hidden">
+    <div id="groupSummary" style="margin-bottom:0"></div>
+  <div class="card" style="padding:0;overflow:hidden">
       <table class="t">
         <thead><tr><th>#</th><th>หมวดหมู่</th><th>ตัวชี้วัด</th><th>ทิศ</th><th>เป้าหมาย</th>
           <th>2564</th><th>2565</th><th>2566</th><th>2567</th><th>2568</th><th>2569</th>
@@ -234,9 +236,16 @@ const SECTION_DEFS = [
   [/^PCU เพิ่ม/, 'tpcu','PCU เพิ่มเติม','🏥'],
 ];
 
-const SKIP_KW = ['ตัวชี้วัด','การเสียชีวิตผู้ป่วย','การส่งต่อผู้ป่วย',
-  'การกลับมารักษา','OPD นอกเวลา','(2) ตัวชี้วัด','SumAdjRw','กำไรสุทธิ',
-  'ทุนสำรองสุทธิ','สถานการณ์เงิน','IPD (ครั้ง'];
+const SKIP_KW = [
+  'ตัวชี้วัด','การเสียชีวิตผู้ป่วย','การส่งต่อผู้ป่วย',
+  'การกลับมารักษา','OPD นอกเวลา','(2) ตัวชี้วัด',
+  'SumAdjRw','กำไรสุทธิ','ทุนสำรองสุทธิ','สถานการณ์เงิน','IPD (ครั้ง',
+  'IV-1','IV-2','IV-3','IV-4','IV-5','IV-6',
+  '*ตัวอย่าง','5. Line, Tube','ผลด้านความปลอดภัย',
+  'ผลด้านการมุ่งเน้น','ผลด้านบุคลากร','ผลด้านการนำ',
+  'ผลด้านประสิทธิผล','ผลด้านการเงิน',
+  'เป้าหมาย','ผลงาน','ปี 2564','ปี 2565',
+];
 
 function parseNum(v) {
   if (v === null || v === undefined) return null;
@@ -253,14 +262,20 @@ function parseNum(v) {
 function parseTarget(t) {
   if (!t) return [null, null];
   const s = String(t).trim();
-  if (!s || s === 'nan' || s === '-') return [null, null];
-  const dir = /^[>≥]|ผ่าน.*\d|มากกว่า/.test(s) ? 'high'
-    : /^[<≤]|น้อยกว่า|ลดลง/.test(s) ? 'low'
-    : s === '0' ? 'low'
+  if (!s || ['nan','-','เป้าหมาย','ผลงาน',''].includes(s)) return [null, null];
+  
+  // เป้าหมาย = 0 (เช่น อัตราเสียชีวิตมารดา, ติดเชื้อ)
+  if (s === '0' || s === '= 0' || s === '0 ราย') return ['low', 0];
+  
+  // ทิศทาง
+  const dir = /^[>≥]|ผ่าน.*\d|มากกว่า|เพิ่ม/.test(s) ? 'high'
+    : /^[<≤]|น้อยกว่า|ลดลง|ไม่เกิน|ไม่มี/.test(s) ? 'low'
     : 'high';
+  
+  // ดึงตัวเลขจาก string
   const m = s.replace(/,/g,'').match(/[\d.]+/);
-  const tv = m ? parseFloat(m[0]) : null;
-  return [dir, tv];
+  if (!m) return [null, null]; // ไม่มีตัวเลข = ไม่นับ
+  return [dir, parseFloat(m[0])];
 }
 
 // ── Parse raw Sheets rows → GROUPS ────────────────────────────────────
@@ -346,6 +361,13 @@ function parseSheetRows(rows) {
     const owner = getCell(colMap.owner || 8);
     const ownerStr = owner ? String(owner).trim() : '';
 
+    // ตรวจเพิ่ม: ข้ามแถวที่ชื่อดูเหมือน header หรือ section label
+    const looksLikeHeader = /^(IV-|\d+\.\s*(S:|I:|M:|P:|L:|E:)|ผลด้าน|\*ตัวอย่าง|5\. Line)/.test(val);
+    if (looksLikeHeader) return;
+    // ตรวจว่า data มีข้อมูลอย่างน้อย 1 ปี หรือมีเป้าหมาย (ถ้า data ว่างหมดแต่ target=0 ก็นับ)
+    const hasAnyData = data.some(d => d !== null);
+    if (!hasAnyData && tv !== 0) return;
+    
     curGroup.kpis.push({name: val.slice(0, 120), dir, target: tv, unit: '', data, owner: ownerStr});
   });
 
@@ -365,7 +387,7 @@ function setStatus(msg, type) {
 async function fetchSheetData() {
   setStatus('⏳ กำลังโหลดข้อมูลจาก Google Sheets...', 'loading');
   try {
-    const url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSFQpzpBB8itcyiwGnnEU-qHnCjSjQGNmJ8e00W42JOQye-IzP5HYOTgnIo4kgsbh27cIUDjs4CDzQK/pub?output=csv&_=' + Date.now();
+    const url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSFQpzpBB8itcyiwGnnEU-qHnCjSjQGNmJ8e00W42JOQye-IzP5HYOTgnIo4kgsbh27cIUDjs4CDzQK/pub?gid=0&single=true&output=csv&_=' + Date.now();
     const res = await fetch(url, {cache: 'no-store'});
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const text = await res.text();
@@ -373,6 +395,8 @@ async function fetchSheetData() {
     const total = GROUPS.reduce((s,g) => s + g.kpis.length, 0);
     const now = new Date().toLocaleTimeString('th-TH');
     setStatus('✅ อัปเดตล่าสุด ' + now + ' · ' + total + ' ตัวชี้วัด', 'ok');
+  const badge = document.getElementById('totalBadge');
+  if (badge) badge.textContent = '● ' + total + ' KPIs';
     return true;
   } catch(e) {
     setStatus('⚠️ ไม่สามารถเชื่อมต่อ Google Sheets ได้ · ' + e.message, 'error');
@@ -451,14 +475,64 @@ function renderOverview(){
   let pass=0,warn=0,low=0,crit=0,na=0;
   FLAT.forEach(({st})=>{{if(st==='pass')pass++;else if(st==='warn')warn++;else if(st==='low')low++;else if(st==='crit')crit++;else na++;}});
   const total=FLAT.length;
+  const hasMeta = total - na; // ตัวที่มีข้อมูล
+  const pct = n => hasMeta > 0 ? (n/hasMeta*100).toFixed(1) : '0.0';
+  const passNotNA = pass+warn+low+crit; // ทั้งหมดที่มีข้อมูล
   document.getElementById('ovCards').innerHTML=[
-    {cls:'ca',n:total,l:'KPI ทั้งหมด',s:'180 ตัวชี้วัด'},
-    {cls:'cp',n:pass,l:'ผ่านเป้าหมาย',s:'≥100%'},
-    {cls:'cw',n:warn,l:'เฝ้าระวัง',s:'80–99%'},
-    {cls:'co',n:low,l:'ต่ำกว่าเป้า',s:'60–79%'},
-    {cls:'cr',n:crit,l:'Critical',s:'<60%'},
-    {cls:'cn',n:na,l:'ไม่มีข้อมูล',s:'ปี 2569'},
+    {cls:'ca',n:total,l:'KPI ทั้งหมด',s:'มีข้อมูล '+hasMeta+' ตัว'},
+    {cls:'cp',n:pass,l:'ผ่านเป้าหมาย',s:'ร้อยละ '+pct(pass)+' (≥100%)'},
+    {cls:'cw',n:warn,l:'เฝ้าระวัง',s:'ร้อยละ '+pct(warn)+' (80–99%)'},
+    {cls:'co',n:low,l:'ต่ำกว่าเป้า',s:'ร้อยละ '+pct(low)+' (60–79%)'},
+    {cls:'cr',n:crit,l:'Critical',s:'ร้อยละ '+pct(crit)+' (<60%)'},
+    {cls:'cn',n:na,l:'ไม่มีข้อมูล',s:'ร้อยละ '+(total>0?(na/total*100).toFixed(1):'0.0')+' ของทั้งหมด'},
   ].map(c=>`<div class="kcard ${c.cls}"><div class="kn">${c.n}</div><div class="kl">${c.l}</div><div class="ks">${c.s}</div></div>`).join('');
+
+  // Overall summary bar
+  const hasMeta2 = total - na;
+  const passPct2 = hasMeta2>0?(pass/hasMeta2*100).toFixed(1):'0.0';
+  const failTotal = warn+low+crit;
+  const failPct2 = hasMeta2>0?(failTotal/hasMeta2*100).toFixed(1):'0.0';
+  const sb = document.getElementById('overallSummaryBar');
+  if(sb) sb.innerHTML = `
+    <div style="background:var(--white);border-radius:12px;padding:14px 18px;box-shadow:0 1px 4px rgba(0,0,0,.1)">
+      <div style="font-size:13px;font-weight:600;color:#083660;margin-bottom:10px">📊 สรุปภาพรวม ปี 2569 — ตัวชี้วัดทั้งหมด ${total} ตัว (มีข้อมูล ${hasMeta2} ตัว)</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="flex:1;min-width:120px;background:#e8f5e9;border-radius:8px;padding:10px 14px;border-left:3px solid #1a7a3c">
+          <div style="font-size:22px;font-weight:700;color:#1a7a3c">${pass} <span style="font-size:14px">ตัว</span></div>
+          <div style="font-size:11px;color:#1a7a3c;font-weight:500">ผ่านเป้าหมาย · ร้อยละ ${passPct2}</div>
+        </div>
+        <div style="flex:1;min-width:120px;background:#ffebee;border-radius:8px;padding:10px 14px;border-left:3px solid #c62828">
+          <div style="font-size:22px;font-weight:700;color:#c62828">${failTotal} <span style="font-size:14px">ตัว</span></div>
+          <div style="font-size:11px;color:#c62828;font-weight:500">ไม่ผ่านเป้าหมาย · ร้อยละ ${failPct2}</div>
+        </div>
+        <div style="flex:1;min-width:80px;background:#fff3e0;border-radius:8px;padding:10px 14px;border-left:3px solid #f9a825">
+          <div style="font-size:22px;font-weight:700;color:#f9a825">${warn} <span style="font-size:14px">ตัว</span></div>
+          <div style="font-size:11px;color:#f9a825;font-weight:500">เฝ้าระวัง (80–99%)</div>
+        </div>
+        <div style="flex:1;min-width:80px;background:#fff3e0;border-radius:8px;padding:10px 14px;border-left:3px solid #d45d00">
+          <div style="font-size:22px;font-weight:700;color:#d45d00">${low} <span style="font-size:14px">ตัว</span></div>
+          <div style="font-size:11px;color:#d45d00;font-weight:500">ต่ำกว่าเป้า (60–79%)</div>
+        </div>
+        <div style="flex:1;min-width:80px;background:#ffebee;border-radius:8px;padding:10px 14px;border-left:3px solid #c62828">
+          <div style="font-size:22px;font-weight:700;color:#c62828">${crit} <span style="font-size:14px">ตัว</span></div>
+          <div style="font-size:11px;color:#c62828;font-weight:500">Critical (&lt;60%)</div>
+        </div>
+      </div>
+      <div style="height:14px;border-radius:7px;overflow:hidden;display:flex;gap:1px">
+        <div style="width:${hasMeta2>0?(pass/hasMeta2*100).toFixed(1):0}%;background:#1a7a3c;transition:.5s"></div>
+        <div style="width:${hasMeta2>0?(warn/hasMeta2*100).toFixed(1):0}%;background:#f9a825;transition:.5s"></div>
+        <div style="width:${hasMeta2>0?(low/hasMeta2*100).toFixed(1):0}%;background:#d45d00;transition:.5s"></div>
+        <div style="width:${hasMeta2>0?(crit/hasMeta2*100).toFixed(1):0}%;background:#c62828;transition:.5s"></div>
+        <div style="width:${hasMeta2>0?(na/hasMeta2*100).toFixed(1):0}%;background:#e0e0e0;transition:.5s"></div>
+      </div>
+      <div style="display:flex;gap:12px;margin-top:6px;font-size:10px;color:#546e7a;flex-wrap:wrap">
+        <span>🟢 ผ่าน ${passPct2}%</span>
+        <span>🟡 เฝ้าระวัง ${hasMeta2>0?(warn/hasMeta2*100).toFixed(1):0}%</span>
+        <span>🟠 ต่ำกว่า ${hasMeta2>0?(low/hasMeta2*100).toFixed(1):0}%</span>
+        <span>🔴 Critical ${hasMeta2>0?(crit/hasMeta2*100).toFixed(1):0}%</span>
+        <span>⚪ N/A ${hasMeta2>0?(na/total*100).toFixed(1):0}%</span>
+      </div>
+    </div>`;
 
   new Chart(document.getElementById('pieAll'),{type:'doughnut',
     data:{labels:['ผ่าน','เฝ้าระวัง','ต่ำกว่า','Critical','N/A'],
@@ -502,6 +576,45 @@ function renderOverview(){
 }
 
 // All table
+function groupSummaryHTML(items) {
+  // สรุปตามกลุ่ม
+  const byGroup = {};
+  items.forEach(({g, st}) => {
+    if (!byGroup[g.id]) byGroup[g.id] = {title: g.title, icon: g.icon||'📋', total:0, pass:0, warn:0, low:0, crit:0, na:0};
+    byGroup[g.id].total++;
+    byGroup[g.id][st]++;
+  });
+  if (Object.keys(byGroup).length === 0) return '';
+  
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;margin-bottom:14px">' +
+    Object.values(byGroup).map(b => {
+      const hasMeta = b.total - b.na;
+      const passPct = hasMeta > 0 ? (b.pass/hasMeta*100).toFixed(1) : '0.0';
+      const failPct = hasMeta > 0 ? ((b.warn+b.low+b.crit)/hasMeta*100).toFixed(1) : '0.0';
+      const passW = Math.round(b.pass/b.total*100);
+      const warnW = Math.round(b.warn/b.total*100);
+      const lowW  = Math.round(b.low/b.total*100);
+      const critW = Math.round(b.crit/b.total*100);
+      const naW   = Math.round(b.na/b.total*100);
+      return `<div style="background:var(--white);border-radius:10px;padding:12px 14px;box-shadow:0 1px 4px rgba(0,0,0,.1)">
+        <div style="font-size:12px;font-weight:600;color:#083660;margin-bottom:8px">${b.icon} ${b.title}</div>
+        <div style="display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+          <span style="font-size:11px;color:#546e7a">ทั้งหมด <b style="color:#0F4C81">${b.total}</b> ตัว</span>
+          <span style="font-size:11px;color:#1a7a3c">ผ่าน <b>${b.pass}</b> (${passPct}%)</span>
+          <span style="font-size:11px;color:#c62828">ไม่ผ่าน <b>${b.warn+b.low+b.crit}</b> (${failPct}%)</span>
+          ${b.na>0?`<span style="font-size:11px;color:#9e9e9e">N/A <b>${b.na}</b></span>`:''}
+        </div>
+        <div style="height:8px;border-radius:4px;overflow:hidden;display:flex;gap:1px">
+          ${passW>0?`<div style="width:${passW}%;background:#1a7a3c"></div>`:''}
+          ${warnW>0?`<div style="width:${warnW}%;background:#f9a825"></div>`:''}
+          ${lowW>0?`<div style="width:${lowW}%;background:#d45d00"></div>`:''}
+          ${critW>0?`<div style="width:${critW}%;background:#c62828"></div>`:''}
+          ${naW>0?`<div style="width:${naW}%;background:#e0e0e0"></div>`:''}
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+}
+
 function renderAll(){
   const grpF=document.getElementById('grpSel').value;
   const stF=document.getElementById('stSel').value;
@@ -516,6 +629,11 @@ function renderAll(){
     return true;
   });
   document.getElementById('allCount').textContent=filtered.length+' รายการ';
+  
+  // แสดง group summary cards ด้านบนตาราง
+  const summEl = document.getElementById('groupSummary');
+  if(summEl) summEl.innerHTML = groupSummaryHTML(filtered);
+
   document.getElementById('allBody').innerHTML=filtered.map(({g,k,v,pct,st},i)=>{
     const hist=k.data.slice(0,5).map(d=>{
       const p=cp(k,d),s=gs(p);
@@ -631,6 +749,8 @@ function renderAllForNav(ids){
     return true;
   });
   document.getElementById('allCount').textContent=filtered.length+' รายการ';
+  const summEl2=document.getElementById('groupSummary');
+  if(summEl2) summEl2.innerHTML=groupSummaryHTML(filtered);
   document.getElementById('allBody').innerHTML=filtered.map(({g,k,v,pct,st},i)=>{
     const hist=k.data.slice(0,5).map(d=>{
       const p=cp(k,d),s=gs(p);
